@@ -70,13 +70,14 @@ const UDP_FORWARDING_TEST_RETRY_INTERVAL_MS = 1000;
 //  - we can connect to the Shadowsocks server port
 //  - the shadowsocks and tun2socks binaries were started
 //  - the system configured to route all traffic through the proxy
-//  - the remote server has enabled UDP forwarding
 //  - we can speak with a semi-random test site via the proxy
 //
+// Checks whether the remote server has enabled UDP forwarding
 // This function is roughly the Electron counterpart of Android's VpnTunnelService.startShadowsocks.
 export function startVpn(config: cordova.plugins.outline.ServerConfig, onDisconnected: () => void) {
   // RoutingService requires an IP; perform a lookup now and use that throughout setup.
   return lookupIp(config.host || '').then((ip: string) => {
+    let isUdpForwardingEnabled = false;
     return isServerReachableByIp(ip, config.port || 0)
         .then(() => {
           return startLocalShadowsocksProxy(ip, config, onDisconnected);
@@ -86,11 +87,12 @@ export function startVpn(config: cordova.plugins.outline.ServerConfig, onDisconn
         })
         .then(() => {
           return checkUdpForwardingEnabled().then(() => {
-            return startTun2socks(ip, true, onDisconnected);
+            isUdpForwardingEnabled = true;
           }).catch((e) => {
             console.warn('UDP forwarding disabled.');
-            return startTun2socks(ip, false, onDisconnected);
           });
+        }).then(() => {
+          return startTun2socks(ip, isUdpForwardingEnabled, onDisconnected);
         })
         .then(() => {
           return routingService.configureRouting(TUN2SOCKS_VIRTUAL_ROUTER_IP, ip);
