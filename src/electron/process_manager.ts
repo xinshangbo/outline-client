@@ -74,6 +74,7 @@ const UDP_FORWARDING_TEST_RETRY_INTERVAL_MS = 1000;
 //  - the system configured to route all traffic through the proxy
 //  - the connectivity checks pass, if not automatically connecting on startup (e.g. !isAutoConnect)
 //
+// Checks whether the remote server has enabled UDP forwarding
 // Fulfills with a copy of `serverConfig` that includes the resolved hostname.
 export function startVpn(
   serverConfig: cordova.plugins.outline.ServerConfig, onDisconnected: () => void,
@@ -86,6 +87,7 @@ export function startVpn(
   }
 
   const config = Object.assign({}, serverConfig);
+  let isUdpForwardingEnabled = false;
   return startLocalShadowsocksProxy(config, onDisconnected)
       .then(() => {
         if (isAutoConnect) {
@@ -100,13 +102,12 @@ export function startVpn(
       })
       .then(() => {
         return checkUdpForwardingEnabled()
-            .then(() => {
-              return startTun2socks(config.host || '', true, onDisconnected);
-            })
             .catch((e) => {
               console.log('UDP forwarding disabled.');
-              return startTun2socks(config.host || '', false, onDisconnected);
             });
+      })
+      .then(() => {
+        return startTun2socks(config.host || '', isUdpForwardingEnabled, onDisconnected);
       })
       .then(() => {
         return routingService.configureRouting(
