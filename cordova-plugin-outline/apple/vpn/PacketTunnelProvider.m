@@ -13,10 +13,11 @@
 // limitations under the License.
 
 #import "PacketTunnelProvider.h"
-#import "Shadowsocks.h"
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
+#import "Shadowsocks.h"
+#import "ShadowsocksConnectivity.h"
 #include "VpnExtension-Swift.h"
 #if TARGET_OS_IPHONE
 #import <PacketProcessor_iOS/TunnelInterface.h>
@@ -40,6 +41,7 @@ NSString *const kMessageKeyOnDemand = @"is-on-demand";
 
 @interface PacketTunnelProvider()
 @property (nonatomic) Shadowsocks *shadowsocks;
+@property(nonatomic) ShadowsocksConnectivity *ssConnectivity;
 @property (nonatomic) NSString *hostNetworkAddress;  // IP address of the host in the active network.
 @property (nonatomic) BOOL isTunnelConnected;
 @property (nonatomic, copy) void (^startCompletion)(NSNumber *);
@@ -233,13 +235,18 @@ NSString *const kMessageKeyOnDemand = @"is-on-demand";
       completionHandler(nil);
       return;
     }
-    Shadowsocks *ss = [[Shadowsocks alloc] init:@{@"host": host, @"port": port}];
-    [ss isReachable:^(ErrorCode errorCode) {
-      NSDictionary *response = @{kMessageKeyErrorCode:[NSNumber numberWithLong:errorCode]};
-      completionHandler([NSJSONSerialization dataWithJSONObject:response
-                                                        options:kNilOptions
-                                                          error:nil]);
-    }];
+    // We need to allocate an instance variable for the completion block to be retained. Otherwise,
+    // the completion block gets deallocated and system sends a nil response.
+    self.ssConnectivity = [[ShadowsocksConnectivity alloc] initWithPort:kShadowsocksLocalPort];
+    [self.ssConnectivity
+        isReachable:[self getNetworkIpAddress:(const char *)[host UTF8String]]
+               port:[port intValue]
+         completion:^(BOOL isReachable) {
+           ErrorCode errorCode = isReachable ? noError : serverUnreachable;
+           NSDictionary *response = @{kMessageKeyErrorCode : [NSNumber numberWithLong:errorCode]};
+           completionHandler(
+               [NSJSONSerialization dataWithJSONObject:response options:kNilOptions error:nil]);
+         }];
   }
 }
 
@@ -314,7 +321,7 @@ NSString *const kMessageKeyOnDemand = @"is-on-demand";
 
 // Override setter for |defaultPath| so we get notified of network changes, instead of using KVO on self.
 - (void)setDefaultPath:(NWPath *)newDefaultPath {
-  if (newDefaultPath == nil) {
+  if (newDefaultPath == nil || [self.defaultPath isEqualToPath:newDefaultPath]) {
     return;
   }
   [super setValue:newDefaultPath forKey:@"_defaultPath"];  // Use key, as property is readonly.
@@ -322,8 +329,7 @@ NSString *const kMessageKeyOnDemand = @"is-on-demand";
   if (!self.isTunnelConnected) {
     return;  // Don't react to network changes unless the tunnel is connected.
   }
-  if (newDefaultPath.status == NWPathStatusSatisfied ||
-      newDefaultPath.status == NWPathStatusSatisfiable) {
+  if (newDefaultPath.status == NWPathStatusSatisfied) {
     DDLogInfo(@"Reconnecting tunnel.");
     NSError *error = [TunnelInterface onNetworkConnectivityChange];
     if (error != nil) {
@@ -336,7 +342,7 @@ NSString *const kMessageKeyOnDemand = @"is-on-demand";
         [self cancelTunnelWithError:error];
       }
     }];
-  } else {
+  } else if (newDefaultPath.status != NWPathStatusSatisfiable) {
     DDLogInfo(@"Network connectivity changed. Clearing tunnel settings.");
     [self connectTunnel:nil completion:^(NSError * _Nullable error) {
       if (error != nil) {
@@ -411,8 +417,16 @@ bool getIpAddressString(const struct sockaddr *sa, char *s, socklen_t maxbytes) 
     [self execAppCallbackForAction:kActionStart errorCode:illegalServerConfiguration];
     return;
   }
+  // Check whether UDP support has changed with the network.
+  ShadowsocksConnectivity *ssConnectivity =
+      [[ShadowsocksConnectivity alloc] initWithPort:kShadowsocksLocalPort];
+  [ssConnectivity isUdpForwardingEnabled:^(BOOL isUdpSupported) {
+    DDLogDebug(@"UDP support: %d -> %d", self.connectionStore.isUdpSupported, isUdpSupported);
+    [TunnelInterface setIsUdpForwardingEnabled:isUdpSupported];
+    self.connectionStore.isUdpSupported = isUdpSupported;
+  }];
   if (configChanged || ![activeHostNetworkAddress isEqualToString:self.hostNetworkAddress]) {
-    DDLogInfo(@"Configuration changed or host IP address changed with the network. Restarting ss-local.");
+    DDLogInfo(@"Configuration or host IP address changed with the network. Restarting ss-local.");
     self.hostNetworkAddress = activeHostNetworkAddress;
     [self.shadowsocks stop:^(ErrorCode errorCode) {
       DDLogInfo(@"Shadowsocks stopped.");
@@ -435,10 +449,7 @@ bool getIpAddressString(const struct sockaddr *sa, char *s, socklen_t maxbytes) 
                                                          userInfo:nil]];
                                return;
                              }
-                             BOOL isUdpSupported = errorCode == noError;
-                             [TunnelInterface setIsUdpForwardingEnabled:isUdpSupported];
                              [weakSelf.connectionStore save:self.connection];
-                             weakSelf.connectionStore.isUdpSupported = isUdpSupported;
                            }];
     }];
   }
