@@ -22,6 +22,7 @@ import * as process from 'process';
 import * as url from 'url';
 import autoLaunch = require('auto-launch'); // tslint:disable-line
 
+import * as connectivity from './connectivity';
 import * as errors from '../www/model/errors';
 
 import {ConnectionStore, SerializableConnection} from './connection_store';
@@ -48,10 +49,9 @@ let localizedStrings: {[key: string]: string} = {
 
 const debugMode = process.env.OUTLINE_DEBUG === 'true';
 
-const iconPath = path.join(path.dirname(__dirname), 'icons/win/icon.ico');
 const trayIconImages = {
-  connected: createTrayIconImage('logo.png'),
-  disconnected: createTrayIconImage('logo_grayscale.png')
+  connected: createTrayIconImage('connected.png'),
+  disconnected: createTrayIconImage('disconnected.png')
 };
 
 const enum Options {
@@ -60,7 +60,7 @@ const enum Options {
 
 function createWindow(connectionAtShutdown?: SerializableConnection) {
   // Create the browser window.
-  mainWindow = new BrowserWindow({width: 360, height: 640, resizable: false, icon: iconPath});
+  mainWindow = new BrowserWindow({width: 360, height: 640, resizable: false});
 
   const pathToIndexHtml = path.join(app.getAppPath(), 'www', 'electron_index.html');
   const webAppUrl = new url.URL(`file://${pathToIndexHtml}`);
@@ -151,8 +151,12 @@ function createTrayIcon(status: ConnectionStatus) {
 }
 
 function createTrayIconImage(imageName: string) {
-  return nativeImage.createFromPath(path.join(__dirname, imageName))
-      .resize({width: 16, height: 16});
+  const image =
+      nativeImage.createFromPath(path.join(app.getAppPath(), 'resources', 'tray', imageName));
+  if (image.isEmpty()) {
+    throw new Error(`cannot find ${imageName} tray icon image`);
+  }
+  return image;
 }
 
 // Signals that the app is quitting and quits the app. This is necessary because we override the
@@ -273,7 +277,7 @@ app.on('quit', () => {
 });
 
 promiseIpc.on('is-reachable', (config: cordova.plugins.outline.ServerConfig) => {
-  return process_manager.isServerReachable(config)
+  return connectivity.isServerReachable(config)
       .then(() => {
         return true;
       })
@@ -338,7 +342,6 @@ function sendConnectionStatus(status: ConnectionStatus, connectionId: string) {
 promiseIpc.on(
     'start-proxying', (args: {config: cordova.plugins.outline.ServerConfig, id: string}) => {
       return startVpn(args.config, args.id).catch((e) => {
-        // electron-promise-ipc can only propagate primitives to the renderer process.
         console.error(`could not connect: ${e.name} (${e.message})`);
         throw errors.toErrorCode(e);
       });
